@@ -1,4 +1,12 @@
-# %%
+
+# %%--------------------------
+# Import Libraries
+# ---------------------------
+# This script generates a 2D tile map using a trained RNN model.
+# It includes functions for loading data, training the model, and generating tile maps.
+# The generated tile maps are displayed as mosaics using PIL and matplotlib.
+# The model is saved to a specified path after training.
+# ---------------------------
 
 import os
 import numpy as np
@@ -8,201 +16,204 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
-
 from PIL import Image
-import matplotlib.pyplot as plt
 
-#%% 
+# %%--------------------------
+# Global Settings and Paths
+# ---------------------------
+TILE_FOLDER = "unique_tiles"
+MAP_DAT_PATH = "map.dat"
+MODEL_SAVE_PATH = "model_rnn_2D_2.pth"
+MAP_SHAPE = (32, 32)
 
-def display_tile_map(tile_map_2d):
-    tile_folder = "unique_tiles"
+# %%--------------------------
+# Utility Functions
+# ---------------------------
 
-# Determine tile dimensions by loading a sample tile.
-    sample_tile_path = os.path.join(tile_folder, "unique_tile_0.png")
-    sample_tile = Image.open(sample_tile_path)
+def load_tile_map(filepath, map_shape=MAP_SHAPE, dtype=np.uint32):
+    """
+    Load and reshape tile map data from a binary file.
+    """
+    data = np.fromfile(filepath, dtype=dtype)
+    if data.size != np.prod(map_shape):
+        raise ValueError("Data size does not match expected shape.")
+    return data.reshape(map_shape)
+
+def display_tile_map(tile_map_2d, title="Generated Tile Map"):
+    """
+    Create and display a mosaic image for a given 2D tile map.
+    """
+    sample_tile_path = os.path.join(TILE_FOLDER, "unique_tile_0.png")
+    try:
+        sample_tile = Image.open(sample_tile_path)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Sample tile not found: {sample_tile_path}")
     tile_width, tile_height = sample_tile.size
-
-# Get dimensions of the tile map grid.
+    
     num_rows, num_cols = tile_map_2d.shape
-
-# Create a blank image for the mosaic.
-    mosaic_width = num_cols * tile_width
-    mosaic_height = num_rows * tile_height
-    mosaic = Image.new("RGB", (mosaic_width, mosaic_height))
-
-# Iterate over each tile position in the tile map.
+    mosaic = Image.new("RGB", (num_cols * tile_width, num_rows * tile_height))
+    
     for row in range(num_rows):
         for col in range(num_cols):
             tile_id = tile_map_2d[row, col]
-            tile_path = os.path.join(tile_folder, f"unique_tile_{tile_id}.png")
+            tile_path = os.path.join(TILE_FOLDER, f"unique_tile_{tile_id}.png")
             try:
                 tile_img = Image.open(tile_path)
             except FileNotFoundError:
-            # If the tile image file is missing, create a placeholder image.
+                # Use a red placeholder if the tile image is missing.
                 tile_img = Image.new("RGB", (tile_width, tile_height), color=(255, 0, 0))
-        # Paste the tile image at the appropriate location.
             mosaic.paste(tile_img, (col * tile_width, row * tile_height))
-
-# Display the mosaic using matplotlib.
+    
     plt.figure(figsize=(8, 8))
     plt.imshow(np.array(mosaic))
     plt.axis("off")
-    plt.title("Generated Tile Map")
+    plt.title(title)
     plt.show()
 
-#%%
+# %%--------------------------
+# Data Preparation
+# ---------------------------
 
-tile_map_data = np.fromfile("map.dat", dtype=np.uint32)
+# Load the tile map
+tile_map_data = load_tile_map(MAP_DAT_PATH)
+print(f"Tile map shape: {tile_map_data.shape}")
 
-tile_map_data = tile_map_data.reshape(32,32)
-
-tile_map_size = tile_map_data.shape
-
+# Compute vocabulary information
 vocabulary = np.unique(tile_map_data)
-vocabulary_size = np.sum(np.ones_like(vocabulary))
+vocab_size = len(vocabulary)
+PAD_TOKEN = vocab_size  # Padding token at the end of vocabulary index range
+vocab_size += 1
+print(f"Vocabulary Size (including PAD): {vocab_size}")
 
-#%%
-print(f"map size: {tile_map_size}")
-print(f"Size of vocabulary (unique tiles): {np.sum(np.ones_like(np.unique(tile_map_data)))}")
-display_tile_map(tile_map_data)
+# Define neighbor kernel (using (dx, dy) offsets; here we use (col, row))
+#NEIGHBOR_KERNEL = [(0, -2), (1, -2), (2, -2),(0, -1), (1, -1), (2, -1), (-1, 0)]
+NEIGHBOR_KERNEL = [(-2, -2), (-1, -2), (0, -2),(1, -2), (2, -2), 
+                   (-2, -1), (-1, -1), (0, -1),(1, -1), (2, -1),
+                   (-2, 0), (-1, 0)]
+# This kernel samples 24 previous neighbors in a 5x5 grid centered on the target tile.
+SEQUENCE_LENGTH = len(NEIGHBOR_KERNEL) + 1  # Neighbor tokens plus the target tile
 
-# %%
-PAD_TOKEN = vocabulary_size
-vocabulary_size += 1  # Increase vocabulary size to account for padding token
-
-def sample_tile(tile_map_data, x, y, sequence_length=4):
-    height, width = tile_map_data.shape
-    
-    # Check if we can sample 4 tiles horizontally from (x, y)
-    if x >= width or y >= height:
+def sample_tile(tile_map, col, row):
+    """
+    Safely sample a tile from the tile map using column and row indices.
+    Returns PAD_TOKEN if indices are out of range.
+    """
+    num_rows, num_cols = tile_map.shape
+    if col < 0 or col >= num_cols or row < 0 or row >= num_rows:
         return PAD_TOKEN
-    if x < 0 or y < 0:
-        return PAD_TOKEN
-    
-    # Extract tile
-    tile = tile_map_data[y, x]
-    return tile
+    return tile_map[row, col]
 
+def extract_training_data(tile_map, neighbor_kernel=NEIGHBOR_KERNEL):
+    """
+    Generate training sequences by sliding over the tile map.
+    For each (row, col), create a sequence of neighbor samples followed by the target tile.
+    """
+    num_rows, num_cols = tile_map.shape
+    sequences = []
+    for row in range(num_rows):
+        for col in range(num_cols):
+            seq = []
+            for dx, dy in neighbor_kernel:
+                seq.append(sample_tile(tile_map, col + dx, row + dy))
+            # Append the current tile as the final token in the sequence.
+            seq.append(sample_tile(tile_map, col, row))
+            sequences.append(seq)
+    return np.array(sequences).flatten()
 
-# %%
-neighbor_kernel = [(0, -1), (1, -1), (2, -1), (-1, 0)]
-sequence_length = len(neighbor_kernel) + 1
+training_data_flat = extract_training_data(tile_map_data)
+print(f"Total training tokens: {len(training_data_flat)}")
 
-# Iterate over the tile map data to sample sequences of tiles
-data = []
-sample_count = 0
+# %%--------------------------
+# Dataset and DataLoader
+# ---------------------------
 
-# Switch the loops to row-major order (y: row, x: column)
-for x in range(tile_map_size[0]):      # tile_map_size[0] is the number of rows
-    for y in range(tile_map_size[1]):  # tile_map_size[1] is the number of columns
-        values = []
-        # Apply the neighbor kernel in the same order as used in generation
-        for dx, dy in neighbor_kernel:
-            # Here, (x+dx, y+dy): x is the column and y is the row,
-            # matching sample_tile() which returns tile_map_data[y, x]
-            tile = sample_tile(tile_map_data, x + dx, y + dy, sequence_length)
-            values.append(tile)
-        
-        # Print for debugging (optional)
-        print(f"Sampled sequence at ({x}, {y}): {values}")
-        sample_count += 1
-        data.extend(values)
-
-data = np.array(data)
-
-print(f"Total samples: {sample_count}")
-print(f"Data shape: {data.shape}")
-print(f"Data: {data}")
-
-# %%
-
-# print(data[6])
-# print(data[6,:3,:3])
-# print(data[6,1:,1:])
-
-# print(np.array(data[6,:3,:3]).flatten())
-
-# %%
-batch_size = 256
 class TileMapDataset(Dataset):
-    def __init__(self, data, sequence_length):
+    def __init__(self, data, sequence_length, positional_info):
+        """
+        data: Flattened 1D numpy array of training tokens.
+        sequence_length: Number of tokens per sequence.
+        positional_info: Precomputed position indices tensor of shape (sequence_length - 1,)
+        """
         self.data = data
         self.sequence_length = sequence_length
-
+        self.positional_info = positional_info  # This is constant for all samples
+        
     def __len__(self):
-        # Calculate the number of sequences in the dataset
-        # we divide by sequence_length since in getitem we return n sequences of length sequence_length
-        # n is sequence_length also
-        v = len(self.data) // self.sequence_length
-        return v
-
-    def __getitem__(self, index):
-        return (torch.tensor(self.data[index * self.sequence_length : index * self.sequence_length + self.sequence_length - 1], dtype=torch.long),
-                torch.tensor(self.data[index * self.sequence_length + 1 : index * self.sequence_length + self.sequence_length], dtype=torch.long),
-                torch.tensor(neighbor_kernel, dtype=torch.long))
-dataset = TileMapDataset(data, sequence_length)
-dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-# %%
-
-embedding_dim = 512
-hidden_dim = 512
-n_layers = 1
-
-class PositionalEmbedding(nn.Module):
-    def __init__(self, embedding_dim):
-        super(PositionalEmbedding, self).__init__()
-        
-        self.positional_embeddings = nn.Embedding(sequence_length - 1, embedding_dim)
-        self.position_to_idx = {}
-        for i, pos in enumerate(neighbor_kernel):
-            self.position_to_idx[pos] = i
+        return len(self.data) // self.sequence_length
     
-    def forward(self, sequence_length):
-        indices = [self.position_to_idx[pos] for pos in neighbor_kernel]
-        
-        indices = torch.tensor(indices, dtype=torch.long).to(sequence_length.device).unsqueeze(0).repeat(sequence_length.size(0), 1)
-        
-        return self.positional_embeddings(indices)
+    def __getitem__(self, index):
+        start = index * self.sequence_length
+        # Input is the first (sequence_length - 1) tokens; target is the shifted sequence.
+        inputs = self.data[start : start + self.sequence_length - 1]
+        targets = self.data[start + 1 : start + self.sequence_length]
+        return (torch.tensor(inputs, dtype=torch.long),
+                torch.tensor(targets, dtype=torch.long),
+                self.positional_info)
+
+# Precompute positional indices: here we use a simple sequential index for each token in the input sequence.
+positional_info = torch.arange(SEQUENCE_LENGTH - 1, dtype=torch.long)
+dataset = TileMapDataset(training_data_flat, SEQUENCE_LENGTH, positional_info)
+dataloader = DataLoader(dataset, batch_size=256, shuffle=True)
+
+# %%--------------------------
+# Model Definition
+# ---------------------------
 
 class TileModelRNN(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, hidden_dim, output_dim, n_layers, dropout=0.0):
+    def __init__(self, vocab_size, embedding_dim=512, hidden_dim=512, n_layers=1, dropout=0.0):
         super(TileModelRNN, self).__init__()
-        
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
-        self.positional_embedding = PositionalEmbedding(embedding_dim)
-        self.rnn = nn.GRU(embedding_dim, hidden_dim, n_layers, dropout=dropout, batch_first=True, bidirectional=True)
-        self.fc = nn.Linear(hidden_dim*2, output_dim)
-
+        # Use positional embeddings based on sequence positions (0 to sequence_length-2)
+        self.positional_embedding = nn.Embedding(SEQUENCE_LENGTH - 1, embedding_dim)
+        # Bidirectional GRU layer
+        self.rnn = nn.GRU(embedding_dim, hidden_dim, n_layers, dropout=dropout,
+                          batch_first=True, bidirectional=True)
+        self.fc = nn.Linear(hidden_dim * 2, vocab_size)
+    
     def forward(self, x, positions):
+        """
+        x: Tensor of token indices, shape (batch, seq_len)
+        positions: Tensor of position indices. It can be either:
+                   - A 1D tensor of shape (seq_len,) that will be expanded to (batch, seq_len), or 
+                   - Already batched of shape (batch, seq_len)
+        """
         token_embedded = self.embedding(x)
+
+        # Only add a batch dimension if positions is 1D
+        if positions.dim() == 1:
+            positions = positions.unsqueeze(0).expand(x.size(0), -1)
         pos_embedded = self.positional_embedding(positions)
-        
+
         embedded = token_embedded + pos_embedded
         rnn_output, _ = self.rnn(embedded)
-        
         output = self.fc(rnn_output)
         return output
-    
-model = TileModelRNN(vocabulary_size, embedding_dim, hidden_dim, vocabulary_size, n_layers).cuda()
+
+
+# Set device using abstraction for CUDA/CPU
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = TileModelRNN(vocab_size).to(device)
 num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print(f'Number of parameters: {num_params}') # Number of parameters: 152405
-# %%
+print(f'Number of trainable parameters: {num_params}')
+
+# %%--------------------------
+# Training Loop
+# ---------------------------
 
 learning_rate = 3e-4
 num_epochs = 5000
 
-criterion = nn.CrossEntropyLoss(ignore_index=PAD_TOKEN)  # Ignore padding token during loss calculation
+criterion = nn.CrossEntropyLoss(ignore_index=PAD_TOKEN)
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 model.train()
 
 pbar = tqdm(range(num_epochs), desc="Training", unit="epoch")
 for epoch in pbar:
     epoch_loss = 0.0
-    for i, (inputs, targets, positions) in enumerate(dataloader):
-        inputs, targets, positions = inputs.cuda(), targets.cuda(), positions.cuda()
+    for inputs, targets, positions in dataloader:
+        inputs, targets, positions = inputs.to(device), targets.to(device), positions.to(device)
         outputs = model(inputs, positions)
-        loss = criterion(outputs.view(-1, vocabulary_size), targets.view(-1))
+        loss = criterion(outputs.view(-1, vocab_size), targets.view(-1))
         
         optimizer.zero_grad()
         loss.backward()
@@ -211,88 +222,94 @@ for epoch in pbar:
         epoch_loss += loss.item()
     
     avg_loss = epoch_loss / len(dataloader)
-    # Update the progress bar's postfix with the average loss at the end of the epoch.
-    pbar.set_postfix(avg_loss=f"{avg_loss}")
+    pbar.set_postfix(avg_loss=f"{avg_loss:.4f}")
 
+# Save model state instead of the full model.
+torch.save(model.state_dict(), MODEL_SAVE_PATH)
 
-torch.save(model, f'model_rnn_2D_2.pth')
-# %%
-
+# %%--------------------------
+# Generation Functions
+# ---------------------------
 
 def softmax_with_temperature(logits, temperature=1.0):
     return F.softmax(logits / temperature, dim=-1)
 
-def apply_repetition_penalty(logits, data, x, y, penalty_value, map_size=64):
-    def sample_map(x, y):
-        if x < 0 or x >= map_size or y < 0 or y >= map_size:
-            return map_size - 1
-        return data[y * map_size + x]
-
-    for dx in range(-8, 0):
-        logits[sample_map(x + dx, y)] *= penalty_value
-    for dy in range(-8, 0):
-        logits[sample_map(x, y + dy)] *= penalty_value
-
+def apply_repetition_penalty(logits, generated_map, col, row, penalty_value, map_length):
+    """
+    Apply repetition penalty to logits based on recently generated tiles.
+    This version penalizes tokens from previously generated neighbors
+    in the current row and column.
+    """
+    def get_tile(col_idx, row_idx):
+        if col_idx < 0 or col_idx >= map_length or row_idx < 0 or row_idx >= map_length:
+            return None
+        return generated_map[row_idx * map_length + col_idx]
+    
+    # Penalize tokens in the current row (look backwards up to 8 tiles)
+    for offset in range(1, min(9, col + 1)):
+        token = get_tile(col - offset, row)
+        if token is not None:
+            logits[token] *= penalty_value
+    # Penalize tokens in the current column (look backwards up to 8 tiles)
+    for offset in range(1, min(9, row + 1)):
+        token = get_tile(col, row - offset)
+        if token is not None:
+            logits[token] *= penalty_value
     return logits
 
-def top_k_probs(probs, k):
-    top_k_values, top_k_indices = torch.topk(probs, k)
-    top_k_probs = top_k_values / top_k_values.sum()
-    return top_k_probs, top_k_indices
+def top_k_sampling(probs, k):
+    top_probs, top_indices = torch.topk(probs, k)
+    top_probs = top_probs / top_probs.sum()
+    sampled_idx = torch.multinomial(top_probs, 1).item()
+    return top_indices[sampled_idx]
 
-def sample_from_top_k(probs, k):
-    top_probs, top_indices = top_k_probs(probs, k)
-    sampled_index = torch.multinomial(top_probs, 1).item()
-    next_token = top_indices[sampled_index]
-    return next_token
-
-def generate_tilemap(model, ix, iy, length=16, temperature=0.8, rep_penalty=0.9):
-    generated_map = [PAD_TOKEN] * (length * length)
-
-    def sample_map(x, y):
-        if x < 0 or x >= length or y < 0 or y >= length:
-            return PAD_TOKEN
-        return generated_map[y * length + x]
-
-    with torch.no_grad():
-        for y in range(length):
-            for x in range(length):
-                sequence = []
-                for dx, dy in neighbor_kernel:
-                    sequence.append(sample_map(x+dx, y+dy))
-
-                input_tensor = torch.tensor(sequence, dtype=torch.long).unsqueeze(0).cuda()
-                device = input_tensor.device
-                raw_output = model(input_tensor,torch.tensor(neighbor_kernel, dtype=torch.long, device=device))
-                raw_output = raw_output[0, -1]
-
-                raw_output = apply_repetition_penalty(raw_output, generated_map, x, y, penalty_value=rep_penalty, map_size=length)
-                combined_probs = softmax_with_temperature(raw_output, temperature)
-                
-                top_5_likely = torch.topk(combined_probs, vocabulary_size - 1)
-                #next_token = torch.multinomial(combined_probs, 1).item()
-                next_token = sample_from_top_k(combined_probs, K_TOP)
-
-                generated_map[y * length + x] = next_token.item()
+def generate_tilemap(model, size, temperature=0.8, rep_penalty=0.9, top_k=100):
+    """
+    Generate a tile map of given size using the trained model.
+    Generation is done in an auto-regressive, tile-by-tile manner.
+    """
+    model.eval()
+    generated = [PAD_TOKEN] * (size * size)
     
-    return generated_map
+    def get_generated_tile(col, row):
+        if col < 0 or col >= size or row < 0 or row >= size:
+            return PAD_TOKEN
+        return generated[row * size + col]
+    
+    with torch.no_grad():
+        # Iterate in row-major order to ensure dependencies are generated
+        for row in range(size):
+            for col in range(size):
+                # Build the input sequence from the neighbor kernel
+                seq = []
+                for dx, dy in NEIGHBOR_KERNEL:
+                    seq.append(get_generated_tile(col + dx, row + dy))
+                input_seq = torch.tensor(seq, dtype=torch.long).unsqueeze(0).to(device)
+                pos_info = torch.arange(len(seq), dtype=torch.long).to(device).unsqueeze(0)
+                
+                output = model(input_seq, pos_info)
+                logits = output[0, -1]  # Take logits from the final time step
+                
+                logits = apply_repetition_penalty(logits, generated, col, row, rep_penalty, size)
+                probs = softmax_with_temperature(logits, temperature)
+                next_tile = top_k_sampling(probs, top_k)
+                generated[row * size + col] = next_tile.item() if isinstance(next_tile, torch.Tensor) else next_tile
+    return generated
+
+# %%--------------------------
+# Generate and Display Tile Map
+# ---------------------------
 
 SIZE = 32
-TEMPERATURE = 0.4
+TEMPERATURE = 0.5
 REPETITION_PENALTY = 0.95
-K_TOP = 100                
+TOP_K = 10
 
-model.eval()
-tile_map_gen = generate_tilemap(model, 0, 0,SIZE)
+tile_map_generated = generate_tilemap(model, SIZE, temperature=TEMPERATURE,
+                                      rep_penalty=REPETITION_PENALTY, top_k=TOP_K)
+tile_map_2d = np.array(tile_map_generated).reshape((SIZE, SIZE))
+print(f"Generated tile map: {tile_map_generated}")
 
-
-
-print(f"Generated tile map: {tile_map_gen}")
-
-tile_map_2d = np.array(tile_map_gen).reshape((SIZE, SIZE))
-
-
-display_tile_map(tile_map_2d)
-
+display_tile_map(tile_map_2d, title="Generated Tile Map")
 
 # %%
