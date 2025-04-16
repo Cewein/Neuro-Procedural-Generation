@@ -12,11 +12,49 @@ from tqdm import tqdm
 from PIL import Image
 import matplotlib.pyplot as plt
 
+#%% 
+
+def display_tile_map(tile_map_2d):
+    tile_folder = "unique_tiles"
+
+# Determine tile dimensions by loading a sample tile.
+    sample_tile_path = os.path.join(tile_folder, "unique_tile_0.png")
+    sample_tile = Image.open(sample_tile_path)
+    tile_width, tile_height = sample_tile.size
+
+# Get dimensions of the tile map grid.
+    num_rows, num_cols = tile_map_2d.shape
+
+# Create a blank image for the mosaic.
+    mosaic_width = num_cols * tile_width
+    mosaic_height = num_rows * tile_height
+    mosaic = Image.new("RGB", (mosaic_width, mosaic_height))
+
+# Iterate over each tile position in the tile map.
+    for row in range(num_rows):
+        for col in range(num_cols):
+            tile_id = tile_map_2d[row, col]
+            tile_path = os.path.join(tile_folder, f"unique_tile_{tile_id}.png")
+            try:
+                tile_img = Image.open(tile_path)
+            except FileNotFoundError:
+            # If the tile image file is missing, create a placeholder image.
+                tile_img = Image.new("RGB", (tile_width, tile_height), color=(255, 0, 0))
+        # Paste the tile image at the appropriate location.
+            mosaic.paste(tile_img, (col * tile_width, row * tile_height))
+
+# Display the mosaic using matplotlib.
+    plt.figure(figsize=(8, 8))
+    plt.imshow(np.array(mosaic))
+    plt.axis("off")
+    plt.title("Generated Tile Map")
+    plt.show()
+
 #%%
 
 tile_map_data = np.fromfile("map.dat", dtype=np.uint32)
 
-tile_map_data = tile_map_data.reshape(32,32)
+tile_map_data = tile_map_data.reshape(64,64)
 
 tile_map_size = tile_map_data.shape
 
@@ -26,54 +64,53 @@ vocabulary_size = np.sum(np.ones_like(vocabulary))
 #%%
 print(f"map size: {tile_map_size}")
 print(f"Size of vocabulary (unique tiles): {np.sum(np.ones_like(np.unique(tile_map_data)))}")
+display_tile_map(tile_map_data)
 
 # %%
+PAD_TOKEN = vocabulary_size
+vocabulary_size += 1  # Increase vocabulary size to account for padding token
 
-def sample_tiles(tile_map_data, x, y, sequence_length=4):
+def sample_tile(tile_map_data, x, y, sequence_length=4):
     height, width = tile_map_data.shape
     
     # Check if we can sample 4 tiles horizontally from (x, y)
-    if x + sequence_length <= width:
-        # Extract the 4-tile sequence
-        sequence = tile_map_data[y, x:x+sequence_length]
-        return sequence
+    if x >= width or y >= height:
+        return PAD_TOKEN
+    if x < 0 or y < 0:
+        return PAD_TOKEN
     
-    # If we can't sample 4 tiles (near the edge), return None
-    return None
+    # Extract tile
+    tile = tile_map_data[y, x]
+    return tile
+
 
 # %%
 
-sequence_length = 3
+neighbor_kernel = [(0, -1), (1, -1), (-1, 0)]
+sequence_length = len(neighbor_kernel) + 1
 sample_count = 0
 data = []
 
-neighbor_kernel = [(0, -1), (1, -1), (-1, 0)]
-sequence_length = len(neighbor_kernel) + 1
-
 # Iterate over the tile map data to sample sequences of tiles
-for x in range((tile_map_size[0] - sequence_length)):
-    for y in range(tile_map_size[1] - sequence_length):
+for x in range((tile_map_size[0])):
+    for y in range(tile_map_size[1]):
 
         # Sample a sequence of tiles starting from (x, y)
-        sequences = []
-        for i in range(sequence_length):
-            sequence = sample_tiles(tile_map_data, x, y+i, sequence_length)
-            sequences.append(sequence)
+        values = []
+        for dx, dy in neighbor_kernel:
+            sequence = sample_tile(tile_map_data, x+dx, y+dy, sequence_length)
+            values.append(sequence)
 
-        print(f"Sampled sequence at ({x}, {y}): {sequences}")
+        print(f"Sampled sequence at ({x}, {y}): {values}")
         sample_count += 1
-        data.append(sequences)
+        data.extend(values)
 
 
 data = np.array(data)
 
 print(f"Total samples: {sample_count}")
 print(f"data shape: {data.shape}")
-
-data = np.unique(data, axis=0)
-print(f"Unique samples: {len(data)}")
-print(f"Unique data shape: {data.shape}")
-
+print(f"data: {data}")
 
 # %%
 
@@ -99,26 +136,23 @@ class TileMapDataset(Dataset):
 
     def __getitem__(self, index):
         # sequence_length by sequence_length data (n x n)
-
-        x = np.array(data[index,:3,:3]).flatten()
-        y = np.array(data[index,1:,1:]).flatten()
-
-        return (torch.tensor(x, dtype=torch.long),
-                torch.tensor(x, dtype=torch.long))
+        return (torch.tensor(self.data[index * self.sequence_length : index * self.sequence_length + self.sequence_length - 1], dtype=torch.long),
+                torch.tensor(self.data[index * self.sequence_length + 1 : index * self.sequence_length + self.sequence_length], dtype=torch.long))
 
 dataset = TileMapDataset(data, sequence_length)
 dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 # %%
 
-embedding_dim = 8
-hidden_dim = 16
+embedding_dim = 128
+hidden_dim = 256
 n_layers = 1
 
 class TileModelRNN(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, hidden_dim, output_dim, n_layers, dropout=0.0):
+    def __init__(self, vocab_size, embedding_dim, hidden_dim, output_dim, n_layers, dropout=0.2):
         super(TileModelRNN, self).__init__()
         
+        # Embedding layer with dropout to regularize the input.
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         # self.rnn = nn.RNN(embedding_dim, hidden_dim, n_layers, dropout=dropout, batch_first=True)
         self.rnn = nn.GRU(embedding_dim, hidden_dim, n_layers, dropout=dropout, batch_first=True, bidirectional=True)
@@ -136,10 +170,10 @@ num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f'Number of parameters: {num_params}') # Number of parameters: 152405
 # %%
 
-learning_rate = 5e-4
+learning_rate = 3e-4
 num_epochs = 5000
 
-criterion = nn.CrossEntropyLoss()
+criterion = nn.CrossEntropyLoss(ignore_index=PAD_TOKEN)  # Ignore padding token during loss calculation
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 model.train()
 
@@ -162,11 +196,38 @@ for epoch in pbar:
     pbar.set_postfix(avg_loss=f"{avg_loss:.4f}")
 
 
-torch.save(model, f'model_rnn.pth')
+torch.save(model, f'model_rnn_2D_2.pth')
 # %%
-PAD_TOKEN = 0
-SIZE = 64
-def generate_tilemap(model, ix, iy, length=16):
+
+
+def softmax_with_temperature(logits, temperature=1.0):
+    return F.softmax(logits / temperature, dim=-1)
+
+def apply_repetition_penalty(logits, data, x, y, penalty_value, map_size=64):
+    def sample_map(x, y):
+        if x < 0 or x >= map_size or y < 0 or y >= map_size:
+            return map_size - 1
+        return data[y * map_size + x]
+
+    for dx in range(-8, 0):
+        logits[sample_map(x + dx, y)] *= penalty_value
+    for dy in range(-8, 0):
+        logits[sample_map(x, y + dy)] *= penalty_value
+
+    return logits
+
+def top_k_probs(probs, k):
+    top_k_values, top_k_indices = torch.topk(probs, k)
+    top_k_probs = top_k_values / top_k_values.sum()
+    return top_k_probs, top_k_indices
+
+def sample_from_top_k(probs, k):
+    top_probs, top_indices = top_k_probs(probs, k)
+    sampled_index = torch.multinomial(top_probs, 1).item()
+    next_token = top_indices[sampled_index]
+    return next_token
+
+def generate_tilemap(model, ix, iy, length=16, temperature=0.8, rep_penalty=0.9):
     generated_map = [PAD_TOKEN] * (length * length)
 
     def sample_map(x, y):
@@ -177,65 +238,42 @@ def generate_tilemap(model, ix, iy, length=16):
     with torch.no_grad():
         for y in range(length):
             for x in range(length):
-                square = []
-                for i in range(-(sequence_length - 1), 0):
-                    for j in range(-(sequence_length - 1), 0):
-                        square.append(sample_map(x + i, y + j))
+                sequence = []
+                for dx, dy in neighbor_kernel:
+                    sequence.append(sample_map(x+dx, y+dy))
 
-                input_tensor = torch.tensor(square, dtype=torch.long).unsqueeze(0).cuda()
+                input_tensor = torch.tensor(sequence, dtype=torch.long).unsqueeze(0).cuda()
                 
                 raw_output = model(input_tensor)
                 raw_output = raw_output[0, -1]
 
-                raw_output = F.softmax(raw_output, dim=-1)
+                raw_output = apply_repetition_penalty(raw_output, generated_map, x, y, penalty_value=rep_penalty, map_size=length)
+                combined_probs = softmax_with_temperature(raw_output, temperature)
                 
-                next_token = torch.multinomial(raw_output, 1).item()
+                top_5_likely = torch.topk(combined_probs, vocabulary_size - 1)
+                #next_token = torch.multinomial(combined_probs, 1).item()
+                next_token = sample_from_top_k(combined_probs, 100)
 
-                generated_map[y * length + x] = next_token
+                generated_map[y * length + x] = next_token.item()
     
     return generated_map
-                
+
+SIZE = 32
+TEMPERATURE = 0.8
+REPETITION_PENALTY = 0.95                
+
 model.eval()
 tile_map_gen = generate_tilemap(model, 0, 0,SIZE)
+
+# %%
+
+print(f"Generated tile map: {tile_map_gen}")
 
 tile_map_2d = np.array(tile_map_gen).reshape((SIZE, SIZE))
 print(tile_map_2d)
 
 # %%
-# Folder where unique tile images are stored.
-tile_folder = "unique_tiles"
 
-# Determine tile dimensions by loading a sample tile.
-sample_tile_path = os.path.join(tile_folder, "unique_tile_0.png")
-sample_tile = Image.open(sample_tile_path)
-tile_width, tile_height = sample_tile.size
-
-# Get dimensions of the tile map grid.
-num_rows, num_cols = tile_map_2d.shape
-
-# Create a blank image for the mosaic.
-mosaic_width = num_cols * tile_width
-mosaic_height = num_rows * tile_height
-mosaic = Image.new("RGB", (mosaic_width, mosaic_height))
-
-# Iterate over each tile position in the tile map.
-for row in range(num_rows):
-    for col in range(num_cols):
-        tile_id = tile_map_2d[row, col]
-        tile_path = os.path.join(tile_folder, f"unique_tile_{tile_id}.png")
-        try:
-            tile_img = Image.open(tile_path)
-        except FileNotFoundError:
-            # If the tile image file is missing, create a placeholder image.
-            tile_img = Image.new("RGB", (tile_width, tile_height), color=(255, 0, 0))
-        # Paste the tile image at the appropriate location.
-        mosaic.paste(tile_img, (col * tile_width, row * tile_height))
-
-# Display the mosaic using matplotlib.
-plt.figure(figsize=(8, 8))
-plt.imshow(np.array(mosaic))
-plt.axis("off")
-plt.title("Generated Tile Map")
-plt.show()
+display_tile_map(tile_map_2d)
 # %%
 

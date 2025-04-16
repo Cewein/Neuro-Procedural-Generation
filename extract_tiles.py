@@ -66,10 +66,10 @@ def process_tiles(tiles, colors=4):
     unique_tiles = {}  # hash -> quantized tile image
     mapping = []       # one entry per input tile: the tile's hash
     for tile in tiles:
-        quant_tile = quantize_tile(tile, colors=colors)
-        h = tile_hash(quant_tile)
+        #quant_tile = quantize_tile(tile, colors=colors)
+        h = tile_hash(tile)
         if h not in unique_tiles:
-            unique_tiles[h] = quant_tile
+            unique_tiles[h] = tile
         mapping.append(h)
     return unique_tiles, mapping
 
