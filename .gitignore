@@ -160,3 +160,13 @@ cython_debug/
 #.idea/
 
 unique_tiles/
+/maps
+map.dat
+model_rnn_2D.pth
+tile_mapping.txt
+map.dat
+tile_mapping.txt
+map.dat
+tile_mapping.txt
+map.dat
+/output_tiles
