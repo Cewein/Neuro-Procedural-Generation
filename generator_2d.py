@@ -84,7 +84,7 @@ NEIGHBOR_KERNEL = [(0, -1), (1, -1), (2, -1), (-1, 0)]
 SEQUENCE_LENGTH = len(NEIGHBOR_KERNEL) + 1  # neighbors + target
 
 # This token should be outside the range of tile IDs in the dataset.
-PAD_TOKEN = 594
+PAD_TOKEN = 1993
 
 def sample_tile(tile_map, col, row):
     """
@@ -164,7 +164,7 @@ print(f"Vocabulary size (including PAD): {vocab_size}")
 # Dataset and DataLoader
 # ---------------------------
 
-BATCH_SIZE = 256
+BATCH_SIZE = 2048
 
 class TileMapDataset(Dataset):
     def __init__(self, data, sequence_length, positional_info):
@@ -328,7 +328,7 @@ def generate_tilemap(model, size, temperature=0.8, rep_penalty=0.9, top_k=100):
                 probs = softmax_with_temperature(logits, temperature)
                 next_tile = top_k_sampling(probs, top_k)
                 generated[row * size + col] = next_tile.item() if isinstance(next_tile, torch.Tensor) else next_tile
-                
+
     return generated
 
 # %%--------------------------
