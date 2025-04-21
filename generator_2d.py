@@ -27,8 +27,8 @@ import matplotlib.pyplot as plt
 TILE_ROOT      = "output_tiles"                             # root where all unique_tile_*.png live
 TILE_FOLDER    = TILE_ROOT                                  # used by display_tile_map
 MAP_DAT_DIR    = os.path.join(TILE_ROOT, "bin")             # directory containing all .dat files
-MODEL_SAVE_PATH = "model_rnn_2D_512_512_1.pth"
-MAP_SHAPE      = (32, 32)
+MODEL_SAVE_PATH = "model_rnn_2D_512_512_1_age.pth"
+MAP_SHAPE      = (47, 33)
 TILE_SIZE      = 16
 
 # %%--------------------------
@@ -40,6 +40,7 @@ def load_tile_map(filepath, map_shape=MAP_SHAPE, dtype=np.uint32):
     Load and reshape tile map data from a binary file.
     """
     data = np.fromfile(filepath, dtype=dtype)
+    print(f"Loaded {data.size} tiles from {filepath}.")
     if data.size != np.prod(map_shape):
         raise ValueError(f"Data size in {filepath} does not match expected shape {map_shape}.")
     return data.reshape(map_shape)
@@ -49,7 +50,7 @@ def display_tile_map(tile_map_2d, title="Generated Tile Map"):
     """
     Create and display a mosaic image for a given 2D tile map.
     """
-    sample_tile_path = os.path.join(TILE_FOLDER, "unique_tile_0.png")
+    sample_tile_path = os.path.join(TILE_FOLDER, f"unique_tile_{TILE_SIZE}-{TILE_SIZE}_0.png")
     try:
         sample_tile = Image.open(sample_tile_path)
     except FileNotFoundError:
@@ -62,7 +63,7 @@ def display_tile_map(tile_map_2d, title="Generated Tile Map"):
     for row in range(num_rows):
         for col in range(num_cols):
             tile_id = tile_map_2d[row, col]
-            tile_path = os.path.join(TILE_FOLDER, f"unique_tile_{tile_id}.png")
+            tile_path = os.path.join(TILE_FOLDER, f"unique_tile_{TILE_SIZE}-{TILE_SIZE}_{tile_id}.png")
             try:
                 tile_img = Image.open(tile_path)
             except FileNotFoundError:
@@ -84,7 +85,7 @@ NEIGHBOR_KERNEL = [(0, -1), (1, -1), (2, -1), (-1, 0)]
 SEQUENCE_LENGTH = len(NEIGHBOR_KERNEL) + 1  # neighbors + target
 
 # This token should be outside the range of tile IDs in the dataset.
-PAD_TOKEN = 1993
+PAD_TOKEN = 104
 
 def sample_tile(tile_map, col, row):
     """
@@ -132,7 +133,7 @@ def extract_map_size_from_path(filepath):
     if not match:
         raise ValueError(f"Could not find map dimensions in '{filename}'")
     width, height = map(int, match.groups())
-    return width//TILE_SIZE, height//TILE_SIZE
+    return height//TILE_SIZE, width//TILE_SIZE
 
 map_paths = sorted(
     os.path.join(MAP_DAT_DIR, fname)
@@ -147,7 +148,9 @@ all_sequences = []
 print(f"Found {len(map_paths)} .dat file(s) for training:")
 for path in map_paths:
     print(f"  • {path}")
-    tile_map = load_tile_map(path, map_shape=extract_map_size_from_path(path))
+    size = extract_map_size_from_path(path)
+    print(f"  • Map size: {size[0]} x {size[1]}")
+    tile_map = load_tile_map(path, map_shape=size)
     seq_flat = extract_training_data(tile_map)
     all_sequences.append(seq_flat)
 
@@ -164,7 +167,7 @@ print(f"Vocabulary size (including PAD): {vocab_size}")
 # Dataset and DataLoader
 # ---------------------------
 
-BATCH_SIZE = 2048
+BATCH_SIZE = 512
 
 class TileMapDataset(Dataset):
     def __init__(self, data, sequence_length, positional_info):
@@ -200,8 +203,8 @@ class TileModelRNN(nn.Module):
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         # Use positional embeddings based on sequence positions (0 to sequence_length-2)
         self.positional_embedding = nn.Embedding(SEQUENCE_LENGTH - 1, embedding_dim)
-        # Bidirectional GRU layer
-        self.rnn = nn.GRU(embedding_dim, hidden_dim, n_layers, dropout=dropout,
+        # Bidirectional LSTM layer
+        self.rnn = nn.LSTM(embedding_dim, hidden_dim, n_layers, dropout=dropout,
                           batch_first=True, bidirectional=True)
         self.fc = nn.Linear(hidden_dim * 2, vocab_size)
     
@@ -228,7 +231,7 @@ print(f'Number of trainable parameters: {num_params}')
 # ---------------------------
 
 learning_rate = 3e-4
-num_epochs = 6000
+num_epochs = 4000
 
 criterion = nn.CrossEntropyLoss(ignore_index=PAD_TOKEN)
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -334,18 +337,23 @@ def generate_tilemap(model, size, temperature=0.8, rep_penalty=0.9, top_k=100):
 # %%--------------------------
 # Generate and Display Tile Map
 # ---------------------------
-SIZE = 64
-TEMPERATURE = 0.6
+SIZE = 32
+TEMPERATURE = 0.25
 REPETITION_PENALTY = 0.95
-TOP_K = 10
+TOP_K = 100
 
 tile_map_generated = generate_tilemap(model, SIZE,
                                       temperature=TEMPERATURE,
                                       rep_penalty=REPETITION_PENALTY,
                                       top_k=TOP_K)
+
+print(f"Generated tile map of size {SIZE}x{SIZE} with temperature={TEMPERATURE}, "
+      f"repetition_penalty={REPETITION_PENALTY}, top_k={TOP_K}")
+print(f"Generated tile map: {tile_map_generated}")
+
 tile_map_2d = np.array(tile_map_generated).reshape((SIZE, SIZE))
 print(f"Generated tile map of size {SIZE}×{SIZE}")
 
-display_tile_map(tile_map_2d, title="Generated Tile Map")
+display_tile_map(tile_map_2d)
 
 # %%

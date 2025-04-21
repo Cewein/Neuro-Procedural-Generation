@@ -82,7 +82,7 @@ def process_tiles(tiles, colors=4):
         mapping.append(h)
     return unique_tiles, mapping
 
-def save_unique_tiles(unique_tiles, output_dir):
+def save_unique_tiles(unique_tiles, output_dir, width=16, height=16):
     """
     Save each unique tile from the dictionary as a separate PNG file.
     Each unique tile is assigned a numeric ID based on its order.
@@ -93,7 +93,7 @@ def save_unique_tiles(unique_tiles, output_dir):
     tile_id_mapping = {}
     for idx, (h, tile) in enumerate(unique_tiles.items()):
         tile_id_mapping[h] = idx
-        filename = os.path.join(output_dir, f"unique_tile_{idx}.png")
+        filename = os.path.join(output_dir, f"unique_tile_{width}-{height}_{idx}.png")
         tile.save(filename)
         print(f"Saved unique tile {idx} (hash {h}) to {filename}")
     return tile_id_mapping
@@ -199,7 +199,7 @@ def main():
         print(f"Found {len(global_unique_tiles)} unique tiles across folder '{input_path}'.")
 
         # Save all unique tiles once
-        tile_id_mapping = save_unique_tiles(global_unique_tiles, args.output_dir)
+        tile_id_mapping = save_unique_tiles(global_unique_tiles, args.output_dir, args.tile_width, args.tile_height)
 
         # Save mapping files for each image
         for img_file, mapping in image_mappings.items():
