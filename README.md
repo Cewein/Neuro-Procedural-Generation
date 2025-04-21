@@ -24,6 +24,9 @@ Below are example, map generated with temperature 0.25 and repetition penalty 
 
 ![Generated map](example.png)
 ![Generated map](example_2.png)
+![Generated map](example_3.png)
+![Generated map](example_4.png)
+![Generated map](example_5.png)
 
 ## Quick Start
 

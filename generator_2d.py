@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 TILE_ROOT      = "output_tiles"                             # root where all unique_tile_*.png live
 TILE_FOLDER    = TILE_ROOT                                  # used by display_tile_map
 MAP_DAT_DIR    = os.path.join(TILE_ROOT, "bin")             # directory containing all .dat files
-MODEL_SAVE_PATH = "model_rnn_2D_512_512_1_age.pth"
+MODEL_SAVE_PATH = "model_rnn_2D_512_512_1_egg.pth"
 MAP_SHAPE      = (47, 33)
 TILE_SIZE      = 16
 
@@ -71,7 +71,7 @@ def display_tile_map(tile_map_2d, title="Generated Tile Map"):
                 tile_img = Image.new("RGB", (tile_width, tile_height), color=(255, 0, 0))
             mosaic.paste(tile_img, (col * tile_width, row * tile_height))
 
-    plt.figure(figsize=(8, 8))
+    plt.figure(figsize=(16, 16))
     plt.imshow(np.array(mosaic))
     plt.axis("off")
     plt.title(title)
@@ -85,7 +85,7 @@ NEIGHBOR_KERNEL = [(0, -1), (1, -1), (2, -1), (-1, 0)]
 SEQUENCE_LENGTH = len(NEIGHBOR_KERNEL) + 1  # neighbors + target
 
 # This token should be outside the range of tile IDs in the dataset.
-PAD_TOKEN = 104
+PAD_TOKEN = 139
 
 def sample_tile(tile_map, col, row):
     """
@@ -145,6 +145,10 @@ if not map_paths:
     raise RuntimeError(f"No .dat files found in {MAP_DAT_DIR}")
 
 all_sequences = []
+
+valid_pairs_x = set()
+valid_pairs_y = set()
+
 print(f"Found {len(map_paths)} .dat file(s) for training:")
 for path in map_paths:
     print(f"  • {path}")
@@ -153,6 +157,23 @@ for path in map_paths:
     tile_map = load_tile_map(path, map_shape=size)
     seq_flat = extract_training_data(tile_map)
     all_sequences.append(seq_flat)
+
+    num_rows, num_cols = tile_map.shape
+
+    for row in range(num_rows):
+        for col in range(num_cols):
+            current_tile = sample_tile(tile_map, col, row)
+                
+            neighbor_tile = sample_tile(tile_map, col-1, row)
+            if neighbor_tile != None:
+                valid_pairs_x.add((current_tile, neighbor_tile))
+                
+            neighbor_tile = sample_tile(tile_map, col, row-1)
+            if neighbor_tile != None:
+                valid_pairs_y.add((current_tile, neighbor_tile))
+
+print(f"Valid tile pairs in x direction: {len(valid_pairs_x)}")
+print(f"Valid tile pairs in y direction: {len(valid_pairs_y)}")
 
 # Concatenate into one flat training array
 training_data_flat = np.concatenate(all_sequences)
@@ -232,7 +253,7 @@ class TileModelRNN(nn.Module):
 
 # Set device using abstraction for CUDA/CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = TileModelRNN(vocab_size).to(device)
+model = TileModelRNN(vocab_size,512,512).to(device)
 num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f'Number of trainable parameters: {num_params}')
 
@@ -327,6 +348,13 @@ def generate_tilemap(model, size, temperature=0.8, rep_penalty=0.9, top_k=100):
             return PAD_TOKEN
         return generated[row * size + col]
     
+    def invalid_tile(token, x, y):
+        if not (token, get_generated_tile(x-1, y)) in valid_pairs_x:
+            return True
+        if not (token, get_generated_tile(x, y-1)) in valid_pairs_y:
+            return True
+        return False
+    
     with torch.no_grad():
         # Iterate in row-major order to ensure dependencies are generated
         for row in range(size):
@@ -339,18 +367,40 @@ def generate_tilemap(model, size, temperature=0.8, rep_penalty=0.9, top_k=100):
                 logits = output[-1]
                 logits = apply_repetition_penalty(logits, generated, col, row, rep_penalty, size)
                 probs = softmax_with_temperature(logits, temperature)
-                next_tile = top_k_sampling(probs, top_k)
-                generated[row * size + col] = next_tile.item() if isinstance(next_tile, torch.Tensor) else next_tile
+                
+                # 3) Initial sample
+                candidate = top_k_sampling(probs, top_k)
+                next_token = candidate.item() if isinstance(candidate, torch.Tensor) else candidate
+
+                generated[row * size + col] = next_token
+
+                # Constraint check
+                if col > 0 and row > 0 and invalid_tile(next_token, col, row):
+                    # a) scan top‑25 probs
+                    top_vals, top_idxs = torch.topk(probs, 25)
+                    top_idxs = top_idxs.tolist()
+                    found = False
+
+                    # b) pick first that passes valid_tile==False (i.e. is valid)
+                    for tok in top_idxs:
+                        if not invalid_tile(tok, col, row):
+                            next_token = tok
+                            found = True
+                            break
+                
+                # 4) Commit to output
+                generated[row * size + col] = next_token
+
 
     return generated
 
 # %%--------------------------
 # Generate and Display Tile Map
 # ---------------------------
-SIZE = 32
-TEMPERATURE = 0.35
+SIZE = 128
+TEMPERATURE = 0.25
 REPETITION_PENALTY = 0.95
-TOP_K = 100
+TOP_K = 138
 
 tile_map_generated = generate_tilemap(model, SIZE,
                                       temperature=TEMPERATURE,
@@ -363,6 +413,10 @@ print(f"Generated tile map: {tile_map_generated}")
 
 tile_map_2d = np.array(tile_map_generated).reshape((SIZE, SIZE))
 print(f"Generated tile map of size {SIZE}×{SIZE}")
+
+display_tile_map(tile_map_2d)
+
+# %%
 
 display_tile_map(tile_map_2d)
 
