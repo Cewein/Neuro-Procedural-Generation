@@ -181,7 +181,8 @@ class TileMapDataset(Dataset):
     def __getitem__(self, index):
         start = index * self.sequence_length
         inputs = self.data[start : start + self.sequence_length - 1]
-        targets = self.data[start + 1 : start + self.sequence_length]
+        targets = self.data[start + self.sequence_length-1]
+
         return (
             torch.tensor(inputs, dtype=torch.long),
             torch.tensor(targets, dtype=torch.long),
@@ -217,8 +218,17 @@ class TileModelRNN(nn.Module):
         pos_embedded = self.positional_embedding(positions)
 
         embedded = token_embedded + pos_embedded
-        rnn_output, _ = self.rnn(embedded)
-        return self.fc(rnn_output)
+        rnn_output, (h_n, c_n) = self.rnn(embedded)
+
+        # pick out the *last* layer’s forward + backward hidden states:
+        # if n_layers=1, that’s h_n[0] (forward) and h_n[1] (backward)
+        # for more layers you’d do:
+        forward_hidden  = h_n[-2]   # shape [batch, hidden_dim]
+        backward_hidden = h_n[-1]   # shape [batch, hidden_dim]
+
+        final_hidden = torch.cat([forward_hidden, backward_hidden], dim=1)
+
+        return self.fc(final_hidden)
 
 # Set device using abstraction for CUDA/CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -243,10 +253,10 @@ loss_visualization = []
 pbar = tqdm(range(num_epochs), desc="Training", unit="epoch")
 for epoch in pbar:
     epoch_loss = 0.0
-    for inputs, targets, positions in dataloader:
-        inputs, targets, positions = inputs.to(device), targets.to(device), positions.to(device)
-        outputs = model(inputs, positions)
-        loss = criterion(outputs.view(-1, vocab_size), targets.view(-1))
+    for inputs, target, positions in dataloader:
+        inputs, target, positions = inputs.to(device), target.to(device), positions.to(device)
+        output = model(inputs, positions)
+        loss = criterion(output, target)
         
         optimizer.zero_grad()
         loss.backward()
@@ -326,7 +336,7 @@ def generate_tilemap(model, size, temperature=0.8, rep_penalty=0.9, top_k=100):
                 pos_info = torch.arange(len(seq), dtype=torch.long).unsqueeze(0).to(device)
 
                 output = model(input_seq, pos_info)
-                logits = output[0, -1]
+                logits = output[-1]
                 logits = apply_repetition_penalty(logits, generated, col, row, rep_penalty, size)
                 probs = softmax_with_temperature(logits, temperature)
                 next_tile = top_k_sampling(probs, top_k)
@@ -338,7 +348,7 @@ def generate_tilemap(model, size, temperature=0.8, rep_penalty=0.9, top_k=100):
 # Generate and Display Tile Map
 # ---------------------------
 SIZE = 32
-TEMPERATURE = 0.25
+TEMPERATURE = 0.35
 REPETITION_PENALTY = 0.95
 TOP_K = 100
 
