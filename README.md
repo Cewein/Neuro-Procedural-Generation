@@ -1,22 +1,22 @@
 # 2D RNN Neuro Procedural Generation
 
-This repository demonstrates a neural approach to tile‐based neuro procedural content generation (NPCG), using a bidirectional recurrent neural network (RNN) to model and synthesize spatially coherent maps. By framing map layout as a sequence of tile IDs conditioned on a fixed neighbor kernel, the system learns local and global patterns intrinsic to hand‐crafted or artist‐designed maps, then generates new, large‐scale grids with tunable randomness and structural fidelity.
+This repository demonstrates a neural approach to tile‐based neuro procedural content generation (NPCG), using a bidirectional recurrent neural network (RNN) to model and synthesize spatially coherent maps. By framing map layout as a sequence of tile IDs conditioned on a fixed neighbor kernel, the system learns local and semi-global patterns intrinsic to hand‐crafted or artist‐designed maps, then generates new grids with tunable randomness and structural fidelity.
 
 The process is similar to LLM but not for text but rather for tiles.
 
 ## Technical Overview
 
-Source images in `maps/` are partitioned into 16×16 pixel tiles by `extract_tiles.py`, which deduplicates identical tiles and assigns each a unique integer ID. The layout of any map is thus a grid of these IDs, serialized as a row‑major binary (`.dat`) file in `output_tiles/bin/`.
+Source images in `maps/` are partitioned into 16×16 pixel tiles by `extract_tiles.py`, which deduplicates identical tiles and assigns each a unique integer ID. The layout of any map is thus a grid of these IDs, serialized in a binary (`.dat`) file in `output_tiles/bin/`.
 
 During training, `generator_2d.py` reads all `.dat` files and, for each cell, constructs a sequence of five tokens: four neighbor tiles (north, northeast, east, west) and the target tile. Out‑of‑bounds neighbors are mapped to a special PAD token. Concatenated across all maps, these sequences form the token stream used to train a bidirectional LSTM:
 
-- **Embedding layer** projects tile IDs into a 512‑dimensional space; a learned positional embedding is added to encode each neighbor’s relative offset.
-- A **single‑layer bidirectional LSTM** processes the sequence, its outputs passed through a linear layer to predict the next tile ID.
+- **Embedding layer** projects tile IDs into a higher dimensional space; a learned positional embedding is added to encode each neighbor’s relative offset.
+- A **bidirectional LSTM** processes the sequence, its outputs passed through a linear layer to predict the next tile ID.
 - Training optimizes cross‑entropy loss (ignoring PAD).
 
 ![Loss](example/training_loss.png)
 
-For generation, the trained model runs in evaluation mode over an N×N grid (default N = 64). Tiles are produced in raster order by repeatedly sampling from the softmaxed logits of the current neighbor context, modified by a temperature parameter (e.g., 0.5), top‑k filtering (k = 100), and a repetition penalty that reduces logits of tiles seen within the last eight positions in the same row or column. The resulting ID grid is visualized as a mosaic by pasting corresponding tile images with PIL and displaying via Matplotlib.
+For generation, the trained model runs in evaluation mode over an N×N grid. Tiles are produced in raster order by repeatedly sampling from the softmaxed logits of the current neighbor context, modified by a temperature parameter (e.g., 0.5), top‑k filtering (k = 100), and a repetition penalty that reduces logits of tiles seen within the last eight positions in the same row or column. The resulting ID grid is visualized by pasting corresponding tile images.
 
 ## Example Output
 
@@ -49,6 +49,7 @@ Configuration parameters—tile size, neighbor kernel, epochs, generation temper
 
 ## References
 
+- Lin, J. (2023). *2D RNN map generation*, blog post on voxely.net
 - Graves, A. (2013). *Generating Sequences With Recurrent Neural Networks*. arXiv:1308.0850
 - Oord, A. van den, Kalchbrenner, N., & Kavukcuoglu, K. (2016). *Pixel Recurrent Neural Networks*. arXiv:1601.06759
 - Summerville, A., Snodgrass, S., Mateas, M., & Rowe, J. (2018). *Procedural Content Generation via Machine Learning (PCGML)*. IEEE Transactions on Games, 10(3–4), 257–270
