@@ -14,7 +14,7 @@ During training, `generator_2d.py` reads all `.dat` files and, for each cell, co
 - A **single‑layer bidirectional LSTM** processes the sequence, its outputs passed through a linear layer to predict the next tile ID.
 - Training optimizes cross‑entropy loss (ignoring PAD).
 
-![Loss](training_loss.png)
+![Loss](example/training_loss.png)
 
 For generation, the trained model runs in evaluation mode over an N×N grid (default N = 64). Tiles are produced in raster order by repeatedly sampling from the softmaxed logits of the current neighbor context, modified by a temperature parameter (e.g., 0.5), top‑k filtering (k = 100), and a repetition penalty that reduces logits of tiles seen within the last eight positions in the same row or column. The resulting ID grid is visualized as a mosaic by pasting corresponding tile images with PIL and displaying via Matplotlib.
 
@@ -22,11 +22,11 @@ For generation, the trained model runs in evaluation mode over an N×N grid (def
 
 Below are example, map generated with temperature 0.25 and repetition penalty 0.95. Local motifs seamlessly transition across regions, illustrating the model capacity to capture both microstructure and macrostructure.
 
-![Generated map](example.png)
-![Generated map](example_2.png)
-![Generated map](example_3.png)
-![Generated map](example_4.png)
-![Generated map](example_5.png)
+![Generated map](example/example_1.png)
+![Generated map](example/example_5.png)
+![Generated map](example/example_2.png)
+![Generated map](example/example_3.png)
+![Generated map](example/example_4.png)
 
 ## Quick Start
 
