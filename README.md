@@ -4,6 +4,10 @@ This repository demonstrates a neural approach to tile‐based neuro procedural 
 
 The process is similar to LLM but not for text but rather for tiles.
 
+Side note, while transformer architectures excel at capturing long-range dependencies, they introduce significant complexity and computational overhead with their attention mechanisms and require large datasets to learn positional encodings effectively. RNNs provide a more direct and efficient means to incorporate the immediate context of neighboring tiles and to generate each tile in strict sequence. This strong locality bias aligns naturally with the row-by-row tiling process, reduces both training time and memory usage, and makes the model more robust as the data input is scarce. 
+
+Never the less, A transformer approach could allow more realistic pathway, better city (see datamap ooa_one) and overall a better map layout.
+
 ## Technical Overview
 
 Source images in `maps/` are partitioned into 16×16 pixel tiles by `extract_tiles.py`, which deduplicates identical tiles and assigns each a unique integer ID. The layout of any map is thus a grid of these IDs, serialized in a binary (`.dat`) file in `output_tiles/bin/`.
