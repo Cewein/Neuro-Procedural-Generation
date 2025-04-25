@@ -37,13 +37,23 @@ Below are example, map generated with temperature 0.25 and repetition penalty 
 Clone the repository, install dependencies, then extract tiles and train/generate in a few commands:
 
 ```bash
-git clone <repo_url> && cd <repo>
+git clone https://github.com/Cewein/Neuro-Procedural-Generation && cd Neuro-Procedural-Generation
 pip install torch numpy pillow matplotlib tqdm
-python extract_tiles.py --input_dir maps/ --output_dir output_tiles/ --tile_size 16
+```
+
+You need to also extract the tiles, this is an example using `maps/ooa/` picutre. by default the extraction is 16x16 tiles. it will create a `output_tiles/` directory containing all the possible unique tiles.
+
+```bash
+python extract_tiles.py --input_dir maps/ooa/
+```
+
+you can then run `generator_2d.py` but you need to modify line 88 the `PAD_TOKEN`. It need to be number of unique + 1 (i.e. look at the last number in the output_tiles folder and add one).
+
+```bash
 python generator_2d.py
 ```
 
-Configuration parameters—tile size, neighbor kernel, epochs, generation temperature, top‑k, and repetition penalty—are editable at the top of `generator_2d.py`.
+Configuration parameters tile size, neighbor kernel, epochs, generation temperature, top‑k, and repetition penalty—are editable in `generator_2d.py`.
 
 ## To do
 
